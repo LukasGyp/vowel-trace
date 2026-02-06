@@ -24,6 +24,7 @@ pub(crate) struct FormantApp {
     _stream: cpal::Stream,
     status: String,
     last_rms: f32,
+    last_rms_gate: f32,
     last_detect: Option<f64>,
     last_voiced: bool,
     last_debug: Option<DebugInfo>,
@@ -49,6 +50,7 @@ impl FormantApp {
             _stream: stream,
             status: "running".to_string(),
             last_rms: 0.0,
+            last_rms_gate: ProcessingConfig::RMS_GATE,
             last_detect: None,
             last_voiced: false,
             last_debug: None,
@@ -98,6 +100,7 @@ impl eframe::App for FormantApp {
         }
         for d in self.debug_rx.try_iter() {
             self.last_debug = Some(d);
+            self.last_rms_gate = d.rms_gate;
         }
         let mut pending_spec: Vec<SpectrumFrame> = self.spec_rx.try_iter().collect();
         for mut s in pending_spec.drain(..) {
@@ -122,7 +125,7 @@ impl eframe::App for FormantApp {
             ui.label(format!(
                 "voiced: {} (threshold {:.4})",
                 if self.last_voiced { "yes" } else { "no" },
-                ProcessingConfig::rms_gate_value()
+                self.last_rms_gate
             ));
             if let Some(d) = self.last_debug {
                 ui.label(format!("debug: peaks {}, formants {}", d.peaks, d.formants));

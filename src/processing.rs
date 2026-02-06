@@ -33,6 +33,11 @@ impl ProcessingConfig {
     pub(crate) const DISPLAY_MAX_HZ: f64 = 3000.0;
     pub(crate) const PREEMPH_COEF: f32 = 0.97;
     pub(crate) const RMS_GATE: f32 = 0.05;
+    pub(crate) const RMS_GATE_MIN: f32 = 0.01;
+    pub(crate) const RMS_GATE_MAX: f32 = 0.5;
+    pub(crate) const RMS_GATE_NOISE_MUL: f32 = 3.0;
+    pub(crate) const RMS_GATE_NOISE_ALPHA: f32 = 0.98;
+    pub(crate) const RMS_GATE_SMOOTH_ALPHA: f32 = 0.90;
     pub(crate) const FRAME_SEC: f32 = 0.025;
     pub(crate) const HOP_SEC: f32 = 0.010;
     pub(crate) const SPEC_NFFT: usize = 2048;
@@ -72,9 +77,6 @@ impl ProcessingConfig {
         }
     }
 
-    pub(crate) fn rms_gate_value() -> f32 {
-        Self::RMS_GATE
-    }
 }
 
 pub(crate) fn spawn_processing_thread(
@@ -96,6 +98,9 @@ pub(crate) fn spawn_processing_thread(
         let resample_ifft = planner.plan_fft_inverse(cfg.proc_frame_size);
         let mut resample_in = vec![Complex32::new(0.0, 0.0); cfg.frame_size];
         let mut resample_out = vec![Complex32::new(0.0, 0.0); cfg.proc_frame_size];
+        let mut rms_gate = cfg.rms_gate;
+        let mut noise_rms = (rms_gate / ProcessingConfig::RMS_GATE_NOISE_MUL)
+            .max(ProcessingConfig::RMS_GATE_MIN);
         loop {
             if consumer.len() < cfg.hop_size {
                 thread::sleep(Duration::from_millis(1));
@@ -111,7 +116,18 @@ pub(crate) fn spawn_processing_thread(
             if buffer.len() >= cfg.frame_size {
                 let frame: Vec<f32> = buffer.iter().take(cfg.frame_size).copied().collect();
                 let rms = rms_level(&frame);
-                let voiced = rms >= cfg.rms_gate;
+                if rms < rms_gate {
+                    noise_rms = noise_rms * ProcessingConfig::RMS_GATE_NOISE_ALPHA
+                        + rms * (1.0 - ProcessingConfig::RMS_GATE_NOISE_ALPHA);
+                    let target_gate = (noise_rms * ProcessingConfig::RMS_GATE_NOISE_MUL)
+                        .clamp(
+                            ProcessingConfig::RMS_GATE_MIN,
+                            ProcessingConfig::RMS_GATE_MAX,
+                        );
+                    rms_gate = rms_gate * ProcessingConfig::RMS_GATE_SMOOTH_ALPHA
+                        + target_gate * (1.0 - ProcessingConfig::RMS_GATE_SMOOTH_ALPHA);
+                }
+                let voiced = rms >= rms_gate;
                 let _ = level_tx.try_send(rms);
                 let _ = voiced_tx.try_send(voiced);
 
@@ -145,6 +161,7 @@ pub(crate) fn spawn_processing_thread(
                         }
                         let _ = debug_tx.try_send(DebugInfo {
                             rms,
+                            rms_gate,
                             voiced,
                             peaks: lpc.peaks,
                             formants: lpc.formants.len(),
@@ -152,6 +169,7 @@ pub(crate) fn spawn_processing_thread(
                     } else {
                         let _ = debug_tx.try_send(DebugInfo {
                             rms,
+                            rms_gate,
                             voiced,
                             peaks: 0,
                             formants: 0,
@@ -160,6 +178,7 @@ pub(crate) fn spawn_processing_thread(
                 } else {
                     let _ = debug_tx.try_send(DebugInfo {
                         rms,
+                        rms_gate,
                         voiced,
                         peaks: 0,
                         formants: 0,

@@ -15,6 +15,7 @@ pub(crate) struct SpectrumFrame {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DebugInfo {
     pub(crate) rms: f32,
+    pub(crate) rms_gate: f32,
     pub(crate) voiced: bool,
     pub(crate) peaks: usize,
     pub(crate) formants: usize,
