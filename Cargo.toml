@@ -1,0 +1,14 @@
+[package]
+name = "vowel-trace"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+cpal = "0.15"
+crossbeam-channel = "0.5"
+eframe = "0.27"
+egui_plot = "0.27"
+num-complex = "0.4"
+ringbuf = "0.3"
+rustfft = "6"
