@@ -1,0 +1,80 @@
+name: Release (build + upload assets)
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  BIN_NAME: vowel-trace
+
+jobs:
+  build-and-upload:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: linux_x86_64.tar.gz
+
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: windows_x86_64.zip
+
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            asset: macos_x86_64.tar.gz
+
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset: macos_aarch64.tar.gz
+
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build (release)
+        run: cargo build --release --target ${{ matrix.target }}
+
+      # ----- Package: Linux/macOS -----
+      - name: Package (tar.gz)
+        if: runner.os != 'Windows'
+        run: |
+          set -eux
+          OUTDIR="dist/${{ env.BIN_NAME }}"
+          mkdir -p "$OUTDIR"
+          cp "target/${{ matrix.target }}/release/${{ env.BIN_NAME }}" "$OUTDIR/"
+          tar -czf "${{ env.BIN_NAME }}_${{ github.ref_name }}_${{ matrix.asset }}" -C dist "${{ env.BIN_NAME }}"
+
+      # ----- Package: Windows -----
+      - name: Package (zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $outDir = "dist\${env:BIN_NAME}"
+          New-Item -ItemType Directory -Force $outDir | Out-Null
+          Copy-Item "target\${{ matrix.target }}\release\${env:BIN_NAME}.exe" $outDir
+          Compress-Archive -Path "$outDir\*" -DestinationPath "${env:BIN_NAME}_${env:GITHUB_REF_NAME}_${{ matrix.asset }}"
+
+      - name: Upload assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            ${{ env.BIN_NAME }}_${{ github.ref_name }}_${{ matrix.asset }}
+
