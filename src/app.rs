@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
 use eframe::egui;
-use egui_plot::{Line, Plot, PlotPoints};
+use egui_plot::{GridMark, Line, Plot, PlotPoints, Points};
 
 use crate::audio::setup_audio;
 use crate::processing::ProcessingConfig;
@@ -145,10 +145,36 @@ impl eframe::App for FormantApp {
             let f1 = self.formant_line("F1", |p| p.f1);
             let f2 = self.formant_line("F2", |p| p.f2);
 
-            ui.columns(2, |cols| {
-                let (left, right) = cols.split_at_mut(1);
+            ui.columns(3, |cols| {
+                let (left, rest) = cols.split_at_mut(1);
+                let (middle, right) = rest.split_at_mut(1);
                 let left = &mut left[0];
+                let middle = &mut middle[0];
                 let right = &mut right[0];
+
+                let f1f2_plot = Plot::new("f1f2")
+                    .legend(egui_plot::Legend::default())
+                    .height(400.0)
+                    .include_x(600.0)
+                    .include_x(3000.0)
+                    .include_y(200.0)
+                    .include_y(1000.0)
+                    .x_axis_formatter(|mark: GridMark, _max_char, _range| {
+                        format!("{:.0}", 3600.0 - mark.value)
+                    })
+                    .y_axis_formatter(|mark: GridMark, _max_char, _range| {
+                        format!("{:.0}", 1200.0 - mark.value)
+                    });
+
+                f1f2_plot.show(left, |plot_ui| {
+                    let gap = 0.3;
+                    if let Some(p) = self.points.last() {
+                        if now - p.t <= gap {
+                            let pts = vec![[3600.0 - p.f2, 1200.0 - p.f1]];
+                            plot_ui.points(Points::new(pts).name("F1/F2").radius(6.0));
+                        }
+                    }
+                });
 
                 Plot::new("formants")
                     .legend(egui_plot::Legend::default())
@@ -157,7 +183,7 @@ impl eframe::App for FormantApp {
                     .include_y(ProcessingConfig::DISPLAY_MAX_HZ)
                     .include_x(now - window_sec)
                     .include_x(now)
-                    .show(left, |plot_ui| {
+                    .show(middle, |plot_ui| {
                         plot_ui.line(f1);
                         plot_ui.line(f2);
                     });
@@ -167,8 +193,8 @@ impl eframe::App for FormantApp {
                     .height(400.0)
                     .include_x(0.0)
                     .include_x(ProcessingConfig::DISPLAY_MAX_HZ)
-                    .include_y(ProcessingConfig::SPECTRUM_DB_MIN as f64)
-                    .include_y(ProcessingConfig::SPECTRUM_DB_MAX as f64);
+                    .include_y(-90.0)
+                    .include_y(30.0);
 
                 spectrogram_plot.show(right, |plot_ui| {
                     if !self.last_spectrum.is_empty() {
