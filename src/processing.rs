@@ -7,9 +7,14 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::Sender;
 use num_complex::Complex64;
 use ringbuf::HeapConsumer;
-use rustfft::{num_complex::Complex, Fft, FftPlanner};
+use rustfft::{Fft, FftPlanner, num_complex::Complex};
 
-use crate::types::{DebugInfo, FormantPoint, SpectrumFrame};
+use crate::tracking::TrackingParams;
+use crate::tracking::kalman::KalmanTracker;
+use crate::tracking::raw::RawTracker;
+use crate::tracking::tracker::{Tracker, TrackingMode};
+use crate::tracking::viterbi::ViterbiTracker;
+use crate::types::{DebugInfo, FormantCandidate, FormantCandidates, FormantPoint, SpectrumFrame};
 
 type Complex32 = Complex<f32>;
 
@@ -76,7 +81,6 @@ impl ProcessingConfig {
             spec_bin_hz,
         }
     }
-
 }
 
 pub(crate) fn spawn_processing_thread(
@@ -88,6 +92,7 @@ pub(crate) fn spawn_processing_thread(
     spec_tx: Sender<SpectrumFrame>,
     start: Instant,
     cfg: ProcessingConfig,
+    tracking_params: Arc<TrackingParams>,
 ) {
     thread::spawn(move || {
         let mut buffer = VecDeque::<f32>::with_capacity(cfg.frame_size * 2);
@@ -99,8 +104,16 @@ pub(crate) fn spawn_processing_thread(
         let mut resample_in = vec![Complex32::new(0.0, 0.0); cfg.frame_size];
         let mut resample_out = vec![Complex32::new(0.0, 0.0); cfg.proc_frame_size];
         let mut rms_gate = cfg.rms_gate;
-        let mut noise_rms = (rms_gate / ProcessingConfig::RMS_GATE_NOISE_MUL)
-            .max(ProcessingConfig::RMS_GATE_MIN);
+        let mut noise_rms =
+            (rms_gate / ProcessingConfig::RMS_GATE_NOISE_MUL).max(ProcessingConfig::RMS_GATE_MIN);
+        let mut raw_tracker = RawTracker::new();
+        let mut kalman_tracker = KalmanTracker::new();
+        let mut viterbi_tracker = ViterbiTracker::new();
+        let mut last_mode = tracking_params.mode();
+        let sample_rate_hz = cfg.proc_sample_rate as f32;
+        raw_tracker.reset(sample_rate_hz);
+        kalman_tracker.reset(sample_rate_hz);
+        viterbi_tracker.reset(sample_rate_hz);
         loop {
             if consumer.len() < cfg.hop_size {
                 thread::sleep(Duration::from_millis(1));
@@ -119,11 +132,10 @@ pub(crate) fn spawn_processing_thread(
                 if rms < rms_gate {
                     noise_rms = noise_rms * ProcessingConfig::RMS_GATE_NOISE_ALPHA
                         + rms * (1.0 - ProcessingConfig::RMS_GATE_NOISE_ALPHA);
-                    let target_gate = (noise_rms * ProcessingConfig::RMS_GATE_NOISE_MUL)
-                        .clamp(
-                            ProcessingConfig::RMS_GATE_MIN,
-                            ProcessingConfig::RMS_GATE_MAX,
-                        );
+                    let target_gate = (noise_rms * ProcessingConfig::RMS_GATE_NOISE_MUL).clamp(
+                        ProcessingConfig::RMS_GATE_MIN,
+                        ProcessingConfig::RMS_GATE_MAX,
+                    );
                     rms_gate = rms_gate * ProcessingConfig::RMS_GATE_SMOOTH_ALPHA
                         + target_gate * (1.0 - ProcessingConfig::RMS_GATE_SMOOTH_ALPHA);
                 }
@@ -143,38 +155,59 @@ pub(crate) fn spawn_processing_thread(
                 let spectrum_db = spectrum_db(&x, &cfg, fft.as_ref(), &mut fft_input);
                 let lpc = lpc_analysis(&x, &cfg);
                 let t = start.elapsed().as_secs_f64();
-                if voiced {
-                    if let Some(lpc) = &lpc {
-                        let mut in_range: Vec<f64> = lpc
-                            .formants
-                            .iter()
-                            .copied()
-                            .filter(|f| *f <= ProcessingConfig::DISPLAY_MAX_HZ)
-                            .collect();
-                        in_range.sort_by(|a, b| a.partial_cmp(b).unwrap());
-                        if in_range.len() >= 2 {
-                            let _ = tx.try_send(FormantPoint {
-                                t,
-                                f1: in_range[0],
-                                f2: in_range[1],
-                            });
-                        }
-                        let _ = debug_tx.try_send(DebugInfo {
-                            rms,
-                            rms_gate,
-                            voiced,
-                            peaks: lpc.peaks,
-                            formants: lpc.formants.len(),
-                        });
-                    } else {
-                        let _ = debug_tx.try_send(DebugInfo {
-                            rms,
-                            rms_gate,
-                            voiced,
-                            peaks: 0,
-                            formants: 0,
-                        });
+                let voicing_conf = if rms_gate > 1e-6 {
+                    (rms / (rms_gate * 2.0)).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let measurement = lpc.as_ref().map(|analysis| FormantCandidates {
+                    candidates: analysis.candidates.clone(),
+                    voiced,
+                    voicing_conf,
+                });
+                let snapshot = tracking_params.snapshot();
+                if snapshot.mode != last_mode {
+                    match snapshot.mode {
+                        TrackingMode::Raw => raw_tracker.reset(sample_rate_hz),
+                        TrackingMode::Kalman => kalman_tracker.reset(sample_rate_hz),
+                        TrackingMode::Viterbi => viterbi_tracker.reset(sample_rate_hz),
                     }
+                    last_mode = snapshot.mode;
+                }
+                kalman_tracker.set_params(
+                    snapshot.kalman_q,
+                    snapshot.kalman_r,
+                    snapshot.kalman_max_jump_hz,
+                );
+                viterbi_tracker.set_params(
+                    snapshot.viterbi_transition_smoothness,
+                    snapshot.viterbi_dropout_penalty,
+                    snapshot.viterbi_strength_weight,
+                );
+
+                let estimate = match snapshot.mode {
+                    TrackingMode::Raw => raw_tracker.update(ProcessingConfig::HOP_SEC, measurement),
+                    TrackingMode::Kalman => {
+                        kalman_tracker.update(ProcessingConfig::HOP_SEC, measurement)
+                    }
+                    TrackingMode::Viterbi => {
+                        viterbi_tracker.update(ProcessingConfig::HOP_SEC, measurement)
+                    }
+                };
+                if voiced {
+                    if let Some(mut point) = estimate {
+                        point.t = t;
+                        let _ = tx.try_send(point);
+                    }
+                }
+                if let Some(lpc) = &lpc {
+                    let _ = debug_tx.try_send(DebugInfo {
+                        rms,
+                        rms_gate,
+                        voiced,
+                        peaks: lpc.peaks,
+                        formants: lpc.candidates.len(),
+                    });
                 } else {
                     let _ = debug_tx.try_send(DebugInfo {
                         rms,
@@ -203,7 +236,7 @@ pub(crate) fn spawn_processing_thread(
 }
 
 struct LpcAnalysis {
-    formants: Vec<f64>,
+    candidates: Vec<FormantCandidate>,
     peaks: usize,
     env_db: Vec<f32>,
 }
@@ -298,18 +331,18 @@ fn lpc_analysis(x: &[f32], cfg: &ProcessingConfig) -> Option<LpcAnalysis> {
     let r = &r_full[max_lag..max_lag + 1 + cfg.lpc_order];
     let a = levinson_durbin(r, cfg.lpc_order)?;
     let env_linear = lpc_envelope(&a, cfg.proc_sample_rate, cfg.spec_nfft);
-    let formants = lpc_formants_from_coeffs(
+    let candidates = lpc_formant_candidates_from_coeffs(
         &a,
         cfg.proc_sample_rate,
         ProcessingConfig::FORMANT_FMIN,
         ProcessingConfig::MAX_FORMANT_HZ,
         ProcessingConfig::FORMANT_BW_MAX,
     );
-    let peaks = formants.len();
+    let peaks = candidates.len();
     let mut env_db: Vec<f32> = env_linear.into_iter().map(lin_to_db).collect();
     env_db.truncate(cfg.spec_bins);
     Some(LpcAnalysis {
-        formants,
+        candidates,
         peaks,
         env_db,
     })
@@ -393,19 +426,22 @@ fn lpc_envelope(a: &[f64], _sample_rate: u32, nfft: usize) -> Vec<f32> {
     env
 }
 
-fn lpc_formants_from_coeffs(
+fn lpc_formant_candidates_from_coeffs(
     a: &[f64],
     sample_rate: u32,
     fmin: f64,
     fmax: f64,
     bw_max: f64,
-) -> Vec<f64> {
+) -> Vec<FormantCandidate> {
     if a.len() < 2 || a[0].abs() < 1e-12 {
         return Vec::new();
     }
 
     let roots = durand_kerner_roots(a, 60, 1e-8);
-    let mut formants = Vec::new();
+    let mut candidates = Vec::new();
+    let r_min = 0.7_f64;
+    let r_max = 0.99_f64;
+    let r_span = (r_max - r_min).max(1.0e-6_f64);
     for z in roots.iter() {
         let r = z.norm();
         if r >= 1.0 || z.im <= 0.0 {
@@ -415,11 +451,16 @@ fn lpc_formants_from_coeffs(
         let freq = angle * (sample_rate as f64) / (2.0 * PI);
         let bw = -(sample_rate as f64) / PI * r.ln();
         if freq > fmin && freq < fmax && bw < bw_max {
-            formants.push(freq);
+            let strength = ((r - r_min) / r_span).clamp(0.0, 1.0);
+            candidates.push(FormantCandidate {
+                freq_hz: freq,
+                bandwidth_hz: bw,
+                strength: strength as f32,
+            });
         }
     }
-    formants.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    formants
+    candidates.sort_by(|a, b| a.freq_hz.partial_cmp(&b.freq_hz).unwrap());
+    candidates
 }
 
 fn durand_kerner_roots(a: &[f64], max_iter: usize, tol: f64) -> Vec<Complex64> {

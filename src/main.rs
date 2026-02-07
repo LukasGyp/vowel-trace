@@ -1,6 +1,7 @@
 mod app;
 mod audio;
 mod processing;
+mod tracking;
 mod types;
 
 use app::FormantApp;

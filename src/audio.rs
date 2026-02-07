@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Instant;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -5,7 +6,8 @@ use cpal::{FromSample, Sample, SizedSample};
 use crossbeam_channel::Receiver;
 use ringbuf::{HeapProducer, HeapRb};
 
-use crate::processing::{spawn_processing_thread, ProcessingConfig};
+use crate::processing::{ProcessingConfig, spawn_processing_thread};
+use crate::tracking::TrackingParams;
 use crate::types::{DebugInfo, FormantPoint, SpectrumFrame};
 
 pub(crate) fn setup_audio() -> anyhow::Result<(
@@ -14,6 +16,7 @@ pub(crate) fn setup_audio() -> anyhow::Result<(
     Receiver<bool>,
     Receiver<DebugInfo>,
     Receiver<SpectrumFrame>,
+    Arc<TrackingParams>,
     u32,
     cpal::Stream,
     ProcessingConfig,
@@ -36,6 +39,7 @@ pub(crate) fn setup_audio() -> anyhow::Result<(
     let (debug_tx, debug_rx) = crossbeam_channel::unbounded();
     let (spec_tx, spec_rx) = crossbeam_channel::unbounded();
     let start = Instant::now();
+    let tracking_params = Arc::new(TrackingParams::new());
 
     let stream_config: cpal::StreamConfig = config.clone().into();
     let stream = match config.sample_format() {
@@ -43,13 +47,7 @@ pub(crate) fn setup_audio() -> anyhow::Result<(
         cpal::SampleFormat::I16 => build_stream::<i16>,
         cpal::SampleFormat::U16 => build_stream::<u16>,
         _ => return Err(anyhow::anyhow!("unsupported sample format")),
-    }(
-        &device,
-        &stream_config,
-        channels,
-        producer,
-        stream_error,
-    )?;
+    }(&device, &stream_config, channels, producer, stream_error)?;
 
     let processing = ProcessingConfig::new(sample_rate);
     spawn_processing_thread(
@@ -61,6 +59,7 @@ pub(crate) fn setup_audio() -> anyhow::Result<(
         spec_tx,
         start,
         processing.clone(),
+        tracking_params.clone(),
     );
 
     stream.play()?;
@@ -70,6 +69,7 @@ pub(crate) fn setup_audio() -> anyhow::Result<(
         voiced_rx,
         debug_rx,
         spec_rx,
+        tracking_params,
         sample_rate,
         stream,
         processing,

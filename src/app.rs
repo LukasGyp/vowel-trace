@@ -6,6 +6,8 @@ use egui_plot::{CoordinatesFormatter, GridMark, Line, Plot, PlotPoints, Points};
 
 use crate::audio::setup_audio;
 use crate::processing::ProcessingConfig;
+use crate::tracking::TrackingParams;
+use crate::tracking::tracker::TrackingMode;
 use crate::types::{DebugInfo, FormantPoint, SpectrumFrame};
 
 pub(crate) struct FormantApp {
@@ -28,11 +30,12 @@ pub(crate) struct FormantApp {
     last_detect: Option<f64>,
     last_voiced: bool,
     last_debug: Option<DebugInfo>,
+    tracking_params: std::sync::Arc<TrackingParams>,
 }
 
 impl FormantApp {
     pub(crate) fn new() -> anyhow::Result<Self> {
-        let (rx, level_rx, voiced_rx, debug_rx, spec_rx, sample_rate, stream, cfg) =
+        let (rx, level_rx, voiced_rx, debug_rx, spec_rx, tracking_params, sample_rate, stream, cfg) =
             setup_audio()?;
         Ok(Self {
             rx,
@@ -54,6 +57,7 @@ impl FormantApp {
             last_detect: None,
             last_voiced: false,
             last_debug: None,
+            tracking_params,
         })
     }
 
@@ -145,6 +149,76 @@ impl eframe::App for FormantApp {
                 ui.label("last detect: none");
             }
 
+            ui.separator();
+            ui.label("tracking controls");
+            let mut mode = self.tracking_params.mode();
+            egui::ComboBox::from_label("mode")
+                .selected_text(mode.label())
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_value(&mut mode, TrackingMode::Raw, "Raw")
+                        .changed()
+                    {
+                        self.tracking_params.set_mode(mode);
+                    }
+                    if ui
+                        .selectable_value(&mut mode, TrackingMode::Kalman, "Kalman")
+                        .changed()
+                    {
+                        self.tracking_params.set_mode(mode);
+                    }
+                    if ui
+                        .selectable_value(&mut mode, TrackingMode::Viterbi, "Viterbi")
+                        .changed()
+                    {
+                        self.tracking_params.set_mode(mode);
+                    }
+                });
+
+            let mut kalman_q = self.tracking_params.kalman_q();
+            if ui
+                .add(egui::Slider::new(&mut kalman_q, 1000.0..=200000.0).text("kalman Q"))
+                .changed()
+            {
+                self.tracking_params.set_kalman_q(kalman_q);
+            }
+            let mut kalman_r = self.tracking_params.kalman_r();
+            if ui
+                .add(egui::Slider::new(&mut kalman_r, 10.0..=5000.0).text("kalman R"))
+                .changed()
+            {
+                self.tracking_params.set_kalman_r(kalman_r);
+            }
+            let mut max_jump = self.tracking_params.kalman_max_jump_hz();
+            if ui
+                .add(egui::Slider::new(&mut max_jump, 100.0..=1500.0).text("kalman max jump (Hz)"))
+                .changed()
+            {
+                self.tracking_params.set_kalman_max_jump_hz(max_jump);
+            }
+
+            let mut v_wt = self.tracking_params.viterbi_transition_smoothness();
+            if ui
+                .add(egui::Slider::new(&mut v_wt, 0.0..=0.02).text("viterbi transition"))
+                .changed()
+            {
+                self.tracking_params.set_viterbi_transition_smoothness(v_wt);
+            }
+            let mut v_wd = self.tracking_params.viterbi_dropout_penalty();
+            if ui
+                .add(egui::Slider::new(&mut v_wd, 0.0..=10.0).text("viterbi dropout"))
+                .changed()
+            {
+                self.tracking_params.set_viterbi_dropout_penalty(v_wd);
+            }
+            let mut v_ws = self.tracking_params.viterbi_strength_weight();
+            if ui
+                .add(egui::Slider::new(&mut v_ws, 0.0..=5.0).text("viterbi strength"))
+                .changed()
+            {
+                self.tracking_params.set_viterbi_strength_weight(v_ws);
+            }
+
             let f1 = self.formant_line("F1", |p| p.f1);
             let f2 = self.formant_line("F2", |p| p.f2);
 
@@ -176,7 +250,7 @@ impl eframe::App for FormantApp {
                                 max_step = max_step.max(mark.step_size);
                             }
                             let thick_step = max_step.max(min_step * 10.0);
-                            let mut thick_targets = [600.0, 1600.0, 2600.0];
+                            let thick_targets = [600.0, 1600.0, 2600.0];
                             let mut found = [false, false, false];
                             for mark in &mut marks {
                                 let mut is_thick = false;

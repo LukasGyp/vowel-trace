@@ -5,6 +5,20 @@ pub(crate) struct FormantPoint {
     pub(crate) f2: f64,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FormantCandidate {
+    pub(crate) freq_hz: f64,
+    pub(crate) bandwidth_hz: f64,
+    pub(crate) strength: f32, // 0.0 - 1.0
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct FormantCandidates {
+    pub(crate) candidates: Vec<FormantCandidate>,
+    pub(crate) voiced: bool,
+    pub(crate) voicing_conf: f32, // 0.0 - 1.0
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct SpectrumFrame {
     pub(crate) t: f64,
