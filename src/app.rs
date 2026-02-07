@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
 use eframe::egui;
-use egui_plot::{GridMark, Line, Plot, PlotPoints, Points};
+use egui_plot::{CoordinatesFormatter, GridMark, Line, Plot, PlotPoints, Points};
 
 use crate::audio::setup_audio;
 use crate::processing::ProcessingConfig;
@@ -158,10 +158,97 @@ impl eframe::App for FormantApp {
                 let f1f2_plot = Plot::new("f1f2")
                     .legend(egui_plot::Legend::default())
                     .height(400.0)
+                    .allow_drag(false)
+                    .allow_scroll(false)
+                    .x_axis_label("F2")
+                    .y_axis_label("F1")
+                    .x_grid_spacer({
+                        let default_spacer = egui_plot::log_grid_spacer(10);
+                        move |input| {
+                            let mut marks = default_spacer(input);
+                            if marks.is_empty() {
+                                return marks;
+                            }
+                            let mut min_step = f64::INFINITY;
+                            let mut max_step: f64 = 0.0;
+                            for mark in &marks {
+                                min_step = min_step.min(mark.step_size);
+                                max_step = max_step.max(mark.step_size);
+                            }
+                            let thick_step = max_step.max(min_step * 10.0);
+                            let mut thick_targets = [600.0, 1600.0, 2600.0];
+                            let mut found = [false, false, false];
+                            for mark in &mut marks {
+                                let mut is_thick = false;
+                                for (idx, target) in thick_targets.iter().enumerate() {
+                                    if (mark.value - target).abs() < 1e-6 {
+                                        found[idx] = true;
+                                        is_thick = true;
+                                        break;
+                                    }
+                                }
+                                if is_thick {
+                                    mark.step_size = thick_step;
+                                } else {
+                                    mark.step_size = min_step;
+                                }
+                            }
+                            for (idx, target) in thick_targets.iter().enumerate() {
+                                if !found[idx] {
+                                    marks.push(GridMark {
+                                        value: *target,
+                                        step_size: thick_step,
+                                    });
+                                }
+                            }
+                            marks
+                        }
+                    })
+                    .y_grid_spacer({
+                        let default_spacer = egui_plot::log_grid_spacer(10);
+                        move |input| {
+                            let mut marks = default_spacer(input);
+                            if marks.is_empty() {
+                                return marks;
+                            }
+                            let mut min_step = f64::INFINITY;
+                            let mut max_step: f64 = 0.0;
+                            for mark in &marks {
+                                min_step = min_step.min(mark.step_size);
+                                max_step = max_step.max(mark.step_size);
+                            }
+                            let thick_step = max_step.max(min_step * 10.0);
+                            let mut has_zero = false;
+                            for mark in &mut marks {
+                                if (mark.value - 1200.0).abs() < 1e-6 {
+                                    mark.step_size = thick_step;
+                                    has_zero = true;
+                                } else {
+                                    mark.step_size = min_step;
+                                }
+                            }
+                            if !has_zero {
+                                marks.push(GridMark {
+                                    value: 1200.0,
+                                    step_size: thick_step,
+                                });
+                            }
+                            marks
+                        }
+                    })
+                    .label_formatter(|_name, _value| String::new())
+                    .coordinates_formatter(
+                        egui_plot::Corner::LeftBottom,
+                        CoordinatesFormatter::new(|value, _bounds| {
+                            let x = 3600.0 - value.x;
+                            let y = 1200.0 - value.y;
+                            format!("F2: {:.0}\nF1: {:.0}", x, y)
+                        }),
+                    )
                     .include_x(600.0)
-                    .include_x(3000.0)
+                    .include_x(3100.0)
                     .include_y(200.0)
-                    .include_y(1000.0)
+                    .include_y(1200.0)
                     .x_axis_formatter(|mark: GridMark, _max_char, _range| {
                         format!("{:.0}", 3600.0 - mark.value)
                     })
@@ -170,6 +257,11 @@ impl eframe::App for FormantApp {
                     });
 
                 f1f2_plot.show(left, |plot_ui| {
+                    plot_ui.set_auto_bounds(egui::Vec2b::new(false, false));
+                    plot_ui.set_plot_bounds(egui_plot::PlotBounds::from_min_max(
+                        [600.0, 200.0],
+                        [3100.0, 1200.0],
+                    ));
                     let gap = 0.3;
                     if let Some(p) = self.points.last() {
                         if now - p.t <= gap {
@@ -182,6 +274,15 @@ impl eframe::App for FormantApp {
                 Plot::new("formants")
                     .legend(egui_plot::Legend::default())
                     .height(400.0)
+                    .allow_drag(false)
+                    .allow_scroll(false)
+                    .label_formatter(|_name, _value| String::new())
+                    .coordinates_formatter(
+                        egui_plot::Corner::LeftBottom,
+                        CoordinatesFormatter::new(|value, _bounds| {
+                            format!("t: {:.2}\nHz: {:.0}", value.x, value.y)
+                        }),
+                    )
                     .include_y(0.0)
                     .include_y(ProcessingConfig::DISPLAY_MAX_HZ)
                     .include_x(now - window_sec)
@@ -194,12 +295,26 @@ impl eframe::App for FormantApp {
                 let spectrogram_plot = Plot::new("spectrogram")
                     .legend(egui_plot::Legend::default())
                     .height(400.0)
+                    .allow_drag(false)
+                    .allow_scroll(false)
+                    .label_formatter(|_name, _value| String::new())
+                    .coordinates_formatter(
+                        egui_plot::Corner::LeftBottom,
+                        CoordinatesFormatter::new(|value, _bounds| {
+                            format!("Hz: {:.0}\ndB: {:.1}", value.x, value.y)
+                        }),
+                    )
                     .include_x(0.0)
                     .include_x(ProcessingConfig::DISPLAY_MAX_HZ)
-                    .include_y(-90.0)
+                    .include_y(-100.0)
                     .include_y(30.0);
 
                 spectrogram_plot.show(right, |plot_ui| {
+                    plot_ui.set_auto_bounds(egui::Vec2b::new(false, false));
+                    plot_ui.set_plot_bounds(egui_plot::PlotBounds::from_min_max(
+                        [0.0, -100.0],
+                        [ProcessingConfig::DISPLAY_MAX_HZ, 30.0],
+                    ));
                     if !self.last_spectrum.is_empty() {
                         plot_ui.line(self.spectrum_line("spectrum", &self.last_spectrum));
                     }
