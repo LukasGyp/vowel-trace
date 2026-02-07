@@ -31,11 +31,23 @@ pub(crate) struct FormantApp {
     last_voiced: bool,
     last_debug: Option<DebugInfo>,
     tracking_params: std::sync::Arc<TrackingParams>,
+    input_device_name: String,
 }
 
 impl FormantApp {
     pub(crate) fn new() -> anyhow::Result<Self> {
-        let (rx, level_rx, voiced_rx, debug_rx, spec_rx, tracking_params, sample_rate, stream, cfg) =
+        let (
+            rx,
+            level_rx,
+            voiced_rx,
+            debug_rx,
+            spec_rx,
+            tracking_params,
+            input_device_name,
+            sample_rate,
+            stream,
+            cfg,
+        ) =
             setup_audio()?;
         Ok(Self {
             rx,
@@ -58,6 +70,7 @@ impl FormantApp {
             last_voiced: false,
             last_debug: None,
             tracking_params,
+            input_device_name,
         })
     }
 
@@ -117,6 +130,69 @@ impl eframe::App for FormantApp {
         let window_sec = 5.0;
         self.points.retain(|p| now - p.t <= window_sec);
 
+        let rms_max = ProcessingConfig::RMS_GATE * 2.0;
+        let rms_norm = if rms_max > 1e-6 {
+            (self.last_rms / rms_max).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let gate_norm = if rms_max > 1e-6 {
+            (self.last_rms_gate / rms_max).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let voiced_color = if self.last_voiced {
+            egui::Color32::from_rgb(80, 180, 90)
+        } else {
+            egui::Color32::from_rgb(200, 80, 80)
+        };
+        let voiced_text = if self.last_voiced {
+            "Voiced"
+        } else {
+            "Unvoiced"
+        };
+
+        egui::Area::new("rms_status".into())
+            .anchor(egui::Align2::RIGHT_TOP, [-12.0, 12.0])
+            .show(ctx, |ui| {
+                ui.group(|ui| {
+                    ui.set_min_width(220.0);
+                    ui.set_max_width(220.0);
+                    ui.label(
+                        egui::RichText::new(voiced_text)
+                            .color(voiced_color)
+                            .strong(),
+                    );
+                    let bar_size = egui::vec2(200.0, 18.0);
+                    let (rect, _resp) = ui.allocate_exact_size(bar_size, egui::Sense::hover());
+                    let painter = ui.painter();
+                    let rounding = egui::Rounding::same(3.0);
+                    painter.rect_filled(rect, rounding, egui::Color32::from_gray(30));
+                    let filled = egui::Rect::from_min_max(
+                        rect.min,
+                        egui::pos2(
+                            rect.min.x + rect.width() * rms_norm,
+                            rect.max.y,
+                        ),
+                    );
+                    painter.rect_filled(filled, rounding, egui::Color32::from_rgb(80, 160, 220));
+                    let gate_x = rect.min.x + rect.width() * gate_norm;
+                    painter.line_segment(
+                        [egui::pos2(gate_x, rect.min.y), egui::pos2(gate_x, rect.max.y)],
+                        egui::Stroke::new(1.5, egui::Color32::from_rgb(230, 200, 60)),
+                    );
+                    painter.text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        format!("RMS {:.3}", self.last_rms),
+                        egui::TextStyle::Small.resolve(ui.style()),
+                        egui::Color32::WHITE,
+                    );
+                    ui.add_space(4.0);
+                    ui.label(format!("threshold {:.4}", self.last_rms_gate));
+                });
+            });
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Real-time Formant Tracker");
             ui.label(format!(
@@ -124,30 +200,14 @@ impl eframe::App for FormantApp {
                 self.sample_rate,
                 ProcessingConfig::PROC_SAMPLE_RATE
             ));
-            ui.label(format!("status: {}", self.status));
-            ui.label(format!("rms: {:.4}", self.last_rms));
-            ui.label(format!(
-                "voiced: {} (threshold {:.4})",
-                if self.last_voiced { "yes" } else { "no" },
-                self.last_rms_gate
-            ));
-            if let Some(d) = self.last_debug {
-                ui.label(format!("debug: peaks {}, formants {}", d.peaks, d.formants));
-            } else {
-                ui.label("debug: none");
-            }
+            ui.label(format!("input device: {}", self.input_device_name));
             ui.label(format!(
                 "params: win 25ms, hop 10ms, max_formant {}Hz, preemph {}, lpc_order {}",
                 ProcessingConfig::MAX_FORMANT_HZ,
                 ProcessingConfig::PREEMPH_COEF,
                 ProcessingConfig::LPC_ORDER
             ));
-            if let Some(t) = self.last_detect {
-                let delta = now - t;
-                ui.label(format!("last detect: {:.2} s ago", delta));
-            } else {
-                ui.label("last detect: none");
-            }
+            // last detect removed
 
             ui.separator();
             ui.label("tracking controls");
@@ -155,68 +215,118 @@ impl eframe::App for FormantApp {
             egui::ComboBox::from_label("mode")
                 .selected_text(mode.label())
                 .show_ui(ui, |ui| {
-                    if ui
-                        .selectable_value(&mut mode, TrackingMode::Raw, "Raw")
-                        .changed()
-                    {
+                    let labels = [
+                        TrackingMode::Raw.label(),
+                        TrackingMode::Kalman.label(),
+                        TrackingMode::Viterbi.label(),
+                    ];
+                    let font_id = egui::TextStyle::Button.resolve(ui.style());
+                    let max_width = ui.fonts(|fonts| {
+                        labels
+                            .iter()
+                            .map(|label| {
+                                fonts
+                                    .layout_no_wrap(label.to_string(), font_id.clone(), ui.visuals().text_color())
+                                    .size()
+                                    .x
+                            })
+                            .fold(0.0f32, f32::max)
+                    });
+                    let target_width = max_width + ui.spacing().button_padding.x * 2.0;
+
+                    let clicked = ui
+                        .add_sized(
+                            [target_width, 0.0],
+                            egui::SelectableLabel::new(mode == TrackingMode::Raw, labels[0]),
+                        )
+                        .clicked();
+                    if clicked {
+                        mode = TrackingMode::Raw;
                         self.tracking_params.set_mode(mode);
                     }
-                    if ui
-                        .selectable_value(&mut mode, TrackingMode::Kalman, "Kalman")
-                        .changed()
-                    {
+                    let clicked = ui
+                        .add_sized(
+                            [target_width, 0.0],
+                            egui::SelectableLabel::new(mode == TrackingMode::Kalman, labels[1]),
+                        )
+                        .clicked();
+                    if clicked {
+                        mode = TrackingMode::Kalman;
                         self.tracking_params.set_mode(mode);
                     }
-                    if ui
-                        .selectable_value(&mut mode, TrackingMode::Viterbi, "Viterbi")
-                        .changed()
-                    {
+                    let clicked = ui
+                        .add_sized(
+                            [target_width, 0.0],
+                            egui::SelectableLabel::new(mode == TrackingMode::Viterbi, labels[2]),
+                        )
+                        .clicked();
+                    if clicked {
+                        mode = TrackingMode::Viterbi;
                         self.tracking_params.set_mode(mode);
                     }
                 });
 
-            let mut kalman_q = self.tracking_params.kalman_q();
-            if ui
-                .add(egui::Slider::new(&mut kalman_q, 1000.0..=200000.0).text("kalman Q"))
-                .changed()
-            {
-                self.tracking_params.set_kalman_q(kalman_q);
-            }
-            let mut kalman_r = self.tracking_params.kalman_r();
-            if ui
-                .add(egui::Slider::new(&mut kalman_r, 10.0..=5000.0).text("kalman R"))
-                .changed()
-            {
-                self.tracking_params.set_kalman_r(kalman_r);
-            }
-            let mut max_jump = self.tracking_params.kalman_max_jump_hz();
-            if ui
-                .add(egui::Slider::new(&mut max_jump, 100.0..=1500.0).text("kalman max jump (Hz)"))
-                .changed()
-            {
-                self.tracking_params.set_kalman_max_jump_hz(max_jump);
-            }
-
-            let mut v_wt = self.tracking_params.viterbi_transition_smoothness();
-            if ui
-                .add(egui::Slider::new(&mut v_wt, 0.0..=0.02).text("viterbi transition"))
-                .changed()
-            {
-                self.tracking_params.set_viterbi_transition_smoothness(v_wt);
-            }
-            let mut v_wd = self.tracking_params.viterbi_dropout_penalty();
-            if ui
-                .add(egui::Slider::new(&mut v_wd, 0.0..=10.0).text("viterbi dropout"))
-                .changed()
-            {
-                self.tracking_params.set_viterbi_dropout_penalty(v_wd);
-            }
-            let mut v_ws = self.tracking_params.viterbi_strength_weight();
-            if ui
-                .add(egui::Slider::new(&mut v_ws, 0.0..=5.0).text("viterbi strength"))
-                .changed()
-            {
-                self.tracking_params.set_viterbi_strength_weight(v_ws);
+            match mode {
+                TrackingMode::Kalman => {
+                    let mut kalman_q = self.tracking_params.kalman_q();
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut kalman_q, 1000.0..=2_000_000.0)
+                                .text("kalman Q"),
+                        )
+                        .changed()
+                    {
+                        self.tracking_params.set_kalman_q(kalman_q);
+                    }
+                    let mut kalman_r = self.tracking_params.kalman_r();
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut kalman_r, 1.0..=5000.0).text("kalman R"),
+                        )
+                        .changed()
+                    {
+                        self.tracking_params.set_kalman_r(kalman_r);
+                    }
+                    let mut max_jump = self.tracking_params.kalman_max_jump_hz();
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut max_jump, 100.0..=1500.0)
+                                .text("kalman max jump (Hz)"),
+                        )
+                        .changed()
+                    {
+                        self.tracking_params.set_kalman_max_jump_hz(max_jump);
+                    }
+                }
+                TrackingMode::Viterbi => {
+                    let mut v_wt = self.tracking_params.viterbi_transition_smoothness();
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut v_wt, 0.0..=0.02).text("viterbi transition"),
+                        )
+                        .changed()
+                    {
+                        self.tracking_params
+                            .set_viterbi_transition_smoothness(v_wt);
+                    }
+                    let mut v_wd = self.tracking_params.viterbi_dropout_penalty();
+                    if ui
+                        .add(egui::Slider::new(&mut v_wd, 0.0..=10.0).text("viterbi dropout"))
+                        .changed()
+                    {
+                        self.tracking_params.set_viterbi_dropout_penalty(v_wd);
+                    }
+                    let mut v_ws = self.tracking_params.viterbi_strength_weight();
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut v_ws, 0.0..=5.0).text("viterbi strength"),
+                        )
+                        .changed()
+                    {
+                        self.tracking_params.set_viterbi_strength_weight(v_ws);
+                    }
+                }
+                TrackingMode::Raw => {}
             }
 
             let f1 = self.formant_line("F1", |p| p.f1);
@@ -250,7 +360,7 @@ impl eframe::App for FormantApp {
                                 max_step = max_step.max(mark.step_size);
                             }
                             let thick_step = max_step.max(min_step * 10.0);
-                            let thick_targets = [600.0, 1600.0, 2600.0];
+                            let thick_targets = [1000.0, 2000.0, 3000.0];
                             let mut found = [false, false, false];
                             for mark in &mut marks {
                                 let mut is_thick = false;
@@ -292,20 +402,31 @@ impl eframe::App for FormantApp {
                                 max_step = max_step.max(mark.step_size);
                             }
                             let thick_step = max_step.max(min_step * 10.0);
-                            let mut has_zero = false;
+                            let mut found = [false, false];
                             for mark in &mut marks {
-                                if (mark.value - 1200.0).abs() < 1e-6 {
+                                let mut is_thick = false;
+                                let targets = [200.0, 1200.0];
+                                for (idx, target) in targets.iter().enumerate() {
+                                    if (mark.value - target).abs() < 1e-6 {
+                                        found[idx] = true;
+                                        is_thick = true;
+                                        break;
+                                    }
+                                }
+                                if is_thick {
                                     mark.step_size = thick_step;
-                                    has_zero = true;
                                 } else {
                                     mark.step_size = min_step;
                                 }
                             }
-                            if !has_zero {
-                                marks.push(GridMark {
-                                    value: 1200.0,
-                                    step_size: thick_step,
-                                });
+                            let targets = [200.0, 1200.0];
+                            for (idx, value) in targets.iter().enumerate() {
+                                if !found[idx] {
+                                    marks.push(GridMark {
+                                        value: *value,
+                                        step_size: thick_step,
+                                    });
+                                }
                             }
                             marks
                         }
@@ -314,17 +435,17 @@ impl eframe::App for FormantApp {
                     .coordinates_formatter(
                         egui_plot::Corner::LeftBottom,
                         CoordinatesFormatter::new(|value, _bounds| {
-                            let x = 3600.0 - value.x;
+                            let x = 4000.0 - value.x;
                             let y = 1200.0 - value.y;
                             format!("F2: {:.0}\nF1: {:.0}", x, y)
                         }),
                     )
-                    .include_x(600.0)
-                    .include_x(3100.0)
-                    .include_y(200.0)
+                    .include_x(500.0)
+                    .include_x(3500.0)
+                    .include_y(0.0)
                     .include_y(1200.0)
                     .x_axis_formatter(|mark: GridMark, _max_char, _range| {
-                        format!("{:.0}", 3600.0 - mark.value)
+                        format!("{:.0}", 4000.0 - mark.value)
                     })
                     .y_axis_formatter(|mark: GridMark, _max_char, _range| {
                         format!("{:.0}", 1200.0 - mark.value)
@@ -333,13 +454,13 @@ impl eframe::App for FormantApp {
                 f1f2_plot.show(left, |plot_ui| {
                     plot_ui.set_auto_bounds(egui::Vec2b::new(false, false));
                     plot_ui.set_plot_bounds(egui_plot::PlotBounds::from_min_max(
-                        [600.0, 200.0],
-                        [3100.0, 1200.0],
+                        [500.0, 0.0],
+                        [3500.0, 1200.0],
                     ));
                     let gap = 0.3;
                     if let Some(p) = self.points.last() {
                         if now - p.t <= gap {
-                            let pts = vec![[3600.0 - p.f2, 1200.0 - p.f1]];
+                            let pts = vec![[4000.0 - p.f2, 1200.0 - p.f1]];
                             plot_ui.points(Points::new(pts).name("F1/F2").radius(6.0));
                         }
                     }

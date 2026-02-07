@@ -17,6 +17,7 @@ pub(crate) fn setup_audio() -> anyhow::Result<(
     Receiver<DebugInfo>,
     Receiver<SpectrumFrame>,
     Arc<TrackingParams>,
+    String,
     u32,
     cpal::Stream,
     ProcessingConfig,
@@ -25,6 +26,7 @@ pub(crate) fn setup_audio() -> anyhow::Result<(
     let device = host
         .default_input_device()
         .ok_or_else(|| anyhow::anyhow!("no input device available"))?;
+    let device_name = device.name().unwrap_or_else(|_| "unknown".to_string());
     let config = choose_input_config(&device, 48_000)?;
     let sample_rate = config.sample_rate().0;
     let channels = config.channels() as usize;
@@ -70,6 +72,7 @@ pub(crate) fn setup_audio() -> anyhow::Result<(
         debug_rx,
         spec_rx,
         tracking_params,
+        device_name,
         sample_rate,
         stream,
         processing,

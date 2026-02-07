@@ -1,7 +1,7 @@
 use crate::tracking::tracker::Tracker;
 use crate::types::{FormantCandidate, FormantCandidates, FormantPoint};
 
-const DISPLAY_MAX_HZ: f64 = 3000.0;
+const DISPLAY_MAX_HZ: f64 = 3500.0;
 const SILENCE_FRAMES: usize = 30;
 
 #[derive(Clone, Copy)]
@@ -57,7 +57,8 @@ impl Kalman1D {
         let x0 = self.x[0] + dt * self.x[1];
         let x1 = self.x[1];
 
-        let p00 = self.p[0][0] + dt * (self.p[1][0] + self.p[0][1]) + dt2 * self.p[1][1] + q11;
+        let p00 =
+            self.p[0][0] + dt * (self.p[1][0] + self.p[0][1]) + dt2 * self.p[1][1] + q11;
         let p01 = self.p[0][1] + dt * self.p[1][1] + q12;
         let p10 = self.p[1][0] + dt * self.p[1][1] + q12;
         let p11 = self.p[1][1] + q22;

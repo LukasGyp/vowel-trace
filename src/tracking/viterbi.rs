@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use crate::tracking::tracker::Tracker;
 use crate::types::{FormantCandidate, FormantCandidates, FormantPoint};
 
-const DISPLAY_MAX_HZ: f64 = 3000.0;
+const DISPLAY_MAX_HZ: f64 = 3500.0;
 const SILENCE_FRAMES: usize = 30;
 const WINDOW_LEN: usize = 30;
 
@@ -167,9 +167,9 @@ impl Tracker for ViterbiTracker {
     }
 
     fn update(&mut self, _dt: f32, measurement: Option<FormantCandidates>) -> Option<FormantPoint> {
-        let (voicing_conf, voiced) = match measurement.as_ref() {
-            Some(m) => (m.voicing_conf, m.voiced),
-            None => (0.0, false),
+        let voiced = match measurement.as_ref() {
+            Some(m) => m.voiced,
+            None => false,
         };
         if !voiced {
             self.silence_frames += 1;

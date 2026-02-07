@@ -1,7 +1,7 @@
 use crate::tracking::tracker::Tracker;
 use crate::types::{FormantCandidates, FormantPoint};
 
-const DISPLAY_MAX_HZ: f64 = 3000.0;
+const DISPLAY_MAX_HZ: f64 = 3500.0;
 
 pub(crate) struct RawTracker {
 }

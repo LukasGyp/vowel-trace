@@ -35,7 +35,7 @@ pub(crate) struct ProcessingConfig {
 
 impl ProcessingConfig {
     pub(crate) const MAX_FORMANT_HZ: f64 = 5000.0;
-    pub(crate) const DISPLAY_MAX_HZ: f64 = 3000.0;
+    pub(crate) const DISPLAY_MAX_HZ: f64 = 3500.0;
     pub(crate) const PREEMPH_COEF: f32 = 0.97;
     pub(crate) const RMS_GATE: f32 = 0.05;
     pub(crate) const RMS_GATE_MIN: f32 = 0.01;

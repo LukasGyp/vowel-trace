@@ -32,8 +32,8 @@ impl TrackingParams {
     pub(crate) fn new() -> Self {
         Self {
             mode: AtomicUsize::new(TrackingMode::Kalman.as_usize()),
-            kalman_q: AtomicU32::new(120000.0f32.to_bits()),
-            kalman_r: AtomicU32::new(50.0f32.to_bits()),
+            kalman_q: AtomicU32::new(1_000_000.0f32.to_bits()),
+            kalman_r: AtomicU32::new(5.0f32.to_bits()),
             kalman_max_jump_hz: AtomicU32::new(500.0f32.to_bits()),
             viterbi_transition_smoothness: AtomicU32::new(0.003f32.to_bits()),
             viterbi_dropout_penalty: AtomicU32::new(3.0f32.to_bits()),

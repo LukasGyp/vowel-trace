@@ -9,7 +9,7 @@ use eframe::egui;
 
 fn main() -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1400.0, 600.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1400.0, 720.0]),
         ..Default::default()
     };
     let app = FormantApp::new()?;

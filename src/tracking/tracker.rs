@@ -28,7 +28,7 @@ impl TrackingMode {
         match self {
             TrackingMode::Raw => "Raw",
             TrackingMode::Kalman => "Kalman",
-            TrackingMode::Viterbi => "Viterbi",
+            TrackingMode::Viterbi => "Viterbi (experimental)",
         }
     }
 }
