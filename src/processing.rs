@@ -38,7 +38,7 @@ impl ProcessingConfig {
     pub(crate) const DISPLAY_MAX_HZ: f64 = 3500.0;
     pub(crate) const PREEMPH_COEF: f32 = 0.97;
     pub(crate) const RMS_GATE: f32 = 0.05;
-    pub(crate) const RMS_GATE_MIN: f32 = 0.01;
+    pub(crate) const RMS_GATE_MIN: f32 = 0.005;
     pub(crate) const RMS_GATE_MAX: f32 = 0.5;
     pub(crate) const RMS_GATE_NOISE_MUL: f32 = 3.0;
     pub(crate) const RMS_GATE_NOISE_ALPHA: f32 = 0.98;
